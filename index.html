@@ -1,0 +1,628 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        margin: 0;
+        padding: 1.5rem;
+        color: #222;
+      }
+
+      /* two-column layout: accounts+chart left, transactions right */
+      .layout {
+        display: flex;
+        gap: 2rem;
+        align-items: flex-start;
+      }
+      .left {
+        flex: 1 1 0;
+        min-width: 0;
+      } /* min-width:0 lets the chart shrink */
+      .right {
+        flex: 1 1 0;
+        min-width: 900px;
+      }
+
+      h3 {
+        margin: 0 0 0.5rem;
+      }
+
+      /* tables */
+      table {
+        border-collapse: collapse;
+        margin-bottom: 0.5rem;
+        width: 100%;
+      }
+      th,
+      td {
+        border: 1px solid #ccc;
+        padding: 4px 8px;
+        text-align: left;
+      }
+      th {
+        background: #f5f5f5;
+        font-weight: 600;
+      }
+
+      /* inputs + dropdowns inside cells */
+      input,
+      select {
+        width: 90px;
+        box-sizing: border-box;
+        padding: 2px 4px;
+      }
+      input[type="number"] {
+        width: 80px;
+      }
+
+      /* buttons */
+      button {
+        cursor: pointer;
+        padding: 4px 10px;
+      }
+      button[data-del] {
+        padding: 2px 6px;
+      } /* the ✕ row-delete buttons */
+
+      /* years + reset row */
+      .controls {
+        margin: 1rem 0;
+      }
+      .controls label {
+        margin-right: 1rem;
+      }
+      .charts {
+        height: 500px;
+        width: 50%;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="layout">
+      <!-- LEFT: accounts + controls + chart -->
+      <div class="left">
+        <div class="controls">
+          <label>Years <input id="years" type="number" value="20" /></label>
+          <button id="reset">Reset all</button>
+          <button id="export">Export CSV</button>
+          <button id="import-btn">Import CSV</button>
+          <input id="import-file" type="file" accept=".csv" hidden />
+        </div>
+        <canvas id="chart"></canvas>
+        <h3>Accounts</h3>
+        <table>
+          <thead>
+            <tr id="acc-head"></tr>
+          </thead>
+          <tbody id="acc-rows"></tbody>
+        </table>
+        <button id="acc-add">+ Account</button>
+      </div>
+
+      <!-- RIGHT: transactions, full height -->
+      <div class="right">
+        <h3>Transactions</h3>
+        <table>
+          <thead>
+            <tr id="tx-head"></tr>
+          </thead>
+          <tbody id="tx-rows"></tbody>
+        </table>
+        <button id="tx-add">+ Transaction</button>
+      </div>
+    </div>
+    <script>
+      // -- Muscle memory reward
+      // ── one-time setup ──
+      const cvs = document.createElement("canvas");
+      cvs.style.cssText =
+        "position:fixed;inset:0;pointer-events:none;z-index:9999";
+      document.body.appendChild(cvs);
+      const ctx = cvs.getContext("2d");
+      const resize = () => {
+        cvs.width = innerWidth;
+        cvs.height = innerHeight;
+      };
+      resize();
+      addEventListener("resize", resize);
+
+      const EMOJIS = ["💵", "🤑", "💰", "📈", "🎉", "✨", "💸"];
+      const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+
+      let parts = [],
+        running = false;
+
+      function confetti(n = 10) {
+        const em = pick(EMOJIS);
+        const _x = Math.random() * innerWidth;
+
+        for (let i = 0; i < n; i++) {
+          parts.push({
+            x: _x,
+            y: innerHeight / 2,
+            vx: (Math.random() - 0.5) * 14,
+            vy: Math.random() * -12 - 4,
+            rot: Math.random() * Math.PI,
+            vr: (Math.random() - 0.5) * 0.3,
+            size: 18 + Math.random() * 18,
+            emoji: em,
+          });
+        }
+        if (!running) {
+          running = true;
+          requestAnimationFrame(tick);
+        }
+      }
+
+      function tick() {
+        ctx.clearRect(0, 0, cvs.width, cvs.height);
+        parts = parts.filter((p) => p.y < innerHeight + 50); // drop off-screen ones
+
+        for (const p of parts) {
+          p.vy += 0.4; // gravity
+          p.x += p.vx;
+          p.y += p.vy;
+          p.vx *= 0.99; // air drag
+          p.rot += p.vr;
+
+          ctx.save();
+          ctx.translate(p.x, p.y);
+          ctx.rotate(p.rot);
+          ctx.font = `${p.size}px serif`;
+          ctx.textAlign = "center";
+          ctx.textBaseline = "middle";
+          ctx.fillText(p.emoji, 0, 0);
+          ctx.restore();
+        }
+
+        if (parts.length) requestAnimationFrame(tick);
+        else running = false; // stop the loop when empty
+      }
+
+      document.addEventListener("keydown", (e) => {
+        if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+          e.preventDefault();
+          save();
+          confetti();
+        }
+      });
+
+      const $ = (id) => document.getElementById(id);
+
+      // -- RESET --
+      $("reset").addEventListener("click", () => {
+        if (!confirm("Clear all accounts and transactions? Cannot be undone."))
+          return;
+        localStorage.removeItem(KEY);
+        location.reload();
+      });
+
+      // -- EXPORT --
+      $("export").addEventListener("click", exportCsv);
+      $("import-btn").addEventListener("click", () => $("import-file").click());
+      $("import-file").addEventListener("change", (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+          if (!confirm("Replace current data with the imported file?")) return;
+          importCsv(reader.result);
+          save();
+        };
+        reader.readAsText(file);
+        e.target.value = ""; // lets you re-import the same file later
+      });
+
+      // ── PERSISTENCE ──
+      const KEY = "finance-app";
+
+      function save() {
+        localStorage.setItem(
+          KEY,
+          JSON.stringify({
+            accounts,
+            transactions,
+            years: +$("years").value,
+          }),
+        );
+      }
+
+      function load() {
+        const raw = localStorage.getItem(KEY);
+        if (!raw) return;
+        try {
+          const d = JSON.parse(raw);
+          if (d.accounts) accounts = d.accounts;
+          if (d.transactions) transactions = d.transactions;
+          if (d.years != null) $("years").value = d.years;
+        } catch {} // corrupt storage → ignore, use defaults
+      }
+
+      // ── ACCOUNT COLUMNS ──
+      const ACC_COLS = [
+        { key: "name", label: "Account", type: "text", def: "Account" },
+        { key: "balance", label: "Balance $", type: "number", def: 1000 },
+        { key: "rate", label: "Rate %", type: "number", def: 5 },
+        { key: "limit", label: "Limit", type: "number", def: 0 },
+      ];
+      let accounts = [
+        { name: "Savings", balance: 1000, rate: 4, monthly: 200 },
+        { name: "Index", balance: 5000, rate: 8, monthly: 300 },
+      ];
+
+      // ── TRANSACTION COLUMNS ──
+
+      const TX_COLS = [
+        { key: "name", label: "Name", type: "text", def: "Transaction" },
+        { key: "amount", label: "Amount $", type: "number", def: 100 },
+        { key: "every", label: "Per N mo", type: "number", def: 12 },
+        { key: "start", label: "Start (M/Y)", type: "text", def: "1/2026" },
+        { key: "end", label: "End (M/Y)", type: "text", def: "12/2999" },
+        {
+          key: "source",
+          label: "Source",
+          type: "select",
+          options: () => ["World", ...accounts.map((a) => a.name), "World"],
+          def: "World",
+        },
+        {
+          key: "dest",
+          label: "Destination",
+          type: "select",
+          options: () => ["World", ...accounts.map((a) => a.name), "World"],
+          def: "Savings",
+        },
+      ];
+      let transactions = [
+        {
+          name: "Bonus",
+          amount: 2000,
+          every: 12,
+          start: "6/2026",
+          end: "6/2035",
+        },
+      ];
+      function cell(c, r, i) {
+        if (c.type === "select") {
+          const opts = c
+            .options()
+            .map(
+              (o) =>
+                `<option ${o === r[c.key] ? "selected" : ""}>${o}</option>`,
+            )
+            .join("");
+          return `<select data-i="${i}" data-key="${c.key}">${opts}</select>`;
+        }
+        return `<input data-i="${i}" data-key="${c.key}" type="${c.type}" value="${r[c.key]}">`;
+      }
+      function makeGrid(headId, bodyId, addId, cols, rows, refresh, onEdit) {
+        $(headId).innerHTML =
+          cols.map((c) => `<th>${c.label}</th>`).join("") + "<th></th>";
+
+        function render() {
+          $(bodyId).innerHTML = rows
+            .map(
+              (r, i) => `
+      <tr>
+        ${cols.map((c) => `<td>${cell(c, r, i)}</td>`).join("")}
+        <td><button data-del="${i}">✕</button></td>
+      </tr>`,
+            )
+            .join("");
+        }
+
+        $(bodyId).addEventListener("input", (e) => {
+          const { i, key } = e.target.dataset;
+          if (i == null) return;
+          const col = cols.find((c) => c.key === key);
+          const val = col.type === "number" ? +e.target.value : e.target.value;
+          const old = rows[i][key]; // ← grab old value first
+          rows[i][key] = val;
+          if (onEdit) onEdit(key, old, val); // ← fire hook
+          refresh();
+        });
+        $(bodyId).addEventListener("click", (e) => {
+          if (e.target.dataset.del == null) return;
+          rows.splice(+e.target.dataset.del, 1);
+          render();
+          refresh();
+        });
+        function addRow() {
+          rows.push(Object.fromEntries(cols.map((c) => [c.key, c.def])));
+          render();
+          refresh();
+          // focus first cell of the new row so they keep typing
+          const first = $(bodyId).querySelector(
+            "tr:last-child input, tr:last-child select",
+          );
+          if (first) {
+            first.focus();
+            if (first.select) first.select();
+          }
+        }
+
+        $(addId).addEventListener("click", addRow);
+        render();
+
+        $(bodyId).addEventListener("keydown", (e) => {
+          if (e.key === "Enter" && e.shiftKey) {
+            // ← Shift + Enter
+            e.preventDefault();
+            addRow();
+          }
+        });
+
+        return render; // ← expose render
+      }
+
+      // ── DATE: "M/Y" → month offset from projection start (now) ──
+      const NOW = new Date();
+      const baseY = NOW.getFullYear(),
+        baseM = NOW.getMonth() + 1;
+      function offset(my) {
+        const [m, y] = String(my).split("/").map(Number);
+        return (y - baseY) * 12 + (m - baseM);
+      }
+
+      // ── MATH ──
+
+      function buildData() {
+        const years = +$("years").value || 0;
+        const labels = Array.from({ length: years + 1 }, (_, y) => "Yr " + y);
+
+        const bal = {},
+          rate = {},
+          limit = {},
+          out = {};
+        for (const a of accounts) {
+          bal[a.name] = +a.balance || 0;
+          rate[a.name] = (+a.rate || 0) / 100 / 12;
+          limit[a.name] = +a.limit || 0;
+          out[a.name] = [];
+        }
+        const exists = (name) => name !== "world" && bal[name] !== undefined;
+        const isFull = (name) =>
+          exists(name) && limit[name] && bal[name] >= limit[name];
+
+        // ── per-transaction fire pointers ──
+        const ev = transactions.map((t) => +t.every || 1); // interval in months (fractions OK)
+        const fire = transactions.map((t) => offset(t.start)); // next fire time, in months
+        const endAt = transactions.map((t) => offset(t.end));
+
+        for (let m = 0; m <= years * 12; m++) {
+          if (m > 0) {
+            for (const a of accounts)
+              bal[a.name] =
+                bal[a.name] * (1 + rate[a.name]) + (+a.monthly || 0);
+
+            transactions.forEach((t, k) => {
+              if (ev[k] <= 0) return; // guard against 0 / negative → infinite loop
+              // fire every occurrence that lands at or before this month
+              while (fire[k] <= m && fire[k] <= endAt[k]) {
+                if (!isFull(t.dest)) {
+                  const amt = +t.amount || 0;
+                  if (exists(t.source)) bal[t.source] -= amt;
+                  if (exists(t.dest)) bal[t.dest] += amt;
+                }
+                fire[k] += ev[k]; // advance to next occurrence
+              }
+            });
+          }
+          if (m % 12 === 0)
+            for (const a of accounts) out[a.name].push(Math.round(bal[a.name]));
+        }
+
+        return {
+          labels,
+          datasets: accounts.map((a) => ({
+            label: a.name,
+            data: out[a.name],
+            fill: true,
+            tension: 0.2,
+          })),
+        };
+      }
+
+      load();
+
+      const chart = new Chart($("chart"), {
+        type: "line",
+        data: buildData(),
+        options: {
+          scales: {
+            y: {
+              stacked: true,
+              ticks: { callback: (v) => "$" + v.toLocaleString() },
+            },
+          },
+          plugins: {
+            legend: {
+              onClick(e, legendItem, legend) {
+                const ci = legend.chart;
+                const idx = legendItem.datasetIndex;
+
+                if (!e.native.shiftKey) {
+                  // plain click = default deselect
+                  Chart.defaults.plugins.legend.onClick.call(
+                    this,
+                    e,
+                    legendItem,
+                    legend,
+                  );
+                  return;
+                }
+                // shift-click = isolate / restore
+                const visible = ci.data.datasets.map((_, i) =>
+                  ci.isDatasetVisible(i),
+                );
+                const isolated =
+                  visible[idx] && visible.every((v, i) => (i === idx ? v : !v));
+                ci.data.datasets.forEach((_, i) =>
+                  ci.setDatasetVisibility(i, isolated ? true : i === idx),
+                );
+                ci.update();
+              },
+            },
+          },
+        },
+      });
+
+      function refresh() {
+        // remember hidden series, keyed by label
+        const wasHidden = {};
+        chart.data.datasets.forEach((ds, i) => {
+          if (!chart.isDatasetVisible(i)) wasHidden[ds.label] = true;
+        });
+
+        chart.data = buildData();
+
+        // reapply visibility by matching label
+        chart.data.datasets.forEach((ds, i) => {
+          chart.setDatasetVisibility(i, !wasHidden[ds.label]);
+        });
+
+        chart.update();
+        save();
+      }
+      // wire both tables with the same function
+      const renderTx = makeGrid(
+        "tx-head",
+        "tx-rows",
+        "tx-add",
+        TX_COLS,
+        transactions,
+        refresh,
+      );
+
+      const renderAcc = makeGrid(
+        "acc-head",
+        "acc-rows",
+        "acc-add",
+        ACC_COLS,
+        accounts,
+        refresh,
+        (key, old, val) => {
+          if (key !== "name") return;
+          transactions.forEach((t) => {
+            if (t.dest === old) t.dest = val;
+            if (t.source === old) t.source = val;
+          }); // re-point txs
+          renderTx(); // redraw tx table → dropdown options + selected values update
+        },
+      );
+      $("years").addEventListener("input", refresh);
+
+      // CSV HElpers
+      // ── CSV ──
+      // one file, two labeled sections; column order driven by the configs
+      function escCsv(v) {
+        v = v == null ? "" : String(v);
+        return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+      }
+      function toCsv(cols, rows) {
+        const head = cols.map((c) => c.key).join(",");
+        const body = rows
+          .map((r) => cols.map((c) => escCsv(r[c.key])).join(","))
+          .join("\n");
+        return head + "\n" + body;
+      }
+
+      function exportCsv() {
+        const text =
+          "[accounts]\n" +
+          toCsv(ACC_COLS, accounts) +
+          "\n\n" +
+          "[transactions]\n" +
+          toCsv(TX_COLS, transactions) +
+          "\n";
+        const blob = new Blob([text], { type: "text/csv" });
+        const url = URL.createObjectURL(blob);
+        const a = Object.assign(document.createElement("a"), {
+          href: url,
+          download: "finance.csv",
+        });
+        a.click();
+        URL.revokeObjectURL(url);
+      }
+
+      // parse one CSV line, respecting quoted fields
+      function parseLine(line) {
+        const out = [];
+        let cur = "",
+          q = false;
+        for (let i = 0; i < line.length; i++) {
+          const ch = line[i];
+          if (q) {
+            if (ch === '"') {
+              if (line[i + 1] === '"') {
+                cur += '"';
+                i++;
+              } else q = false;
+            } else cur += ch;
+          } else if (ch === '"') q = true;
+          else if (ch === ",") {
+            out.push(cur);
+            cur = "";
+          } else cur += ch;
+        }
+        out.push(cur);
+        return out;
+      }
+
+      function parseSection(lines, cols) {
+        if (!lines.length) return [];
+        const header = parseLine(lines[0]).map((h) => h.trim());
+        return lines
+          .slice(1)
+          .filter((l) => l.trim())
+          .map((line) => {
+            const vals = parseLine(line);
+            const obj = {};
+            for (const c of cols) {
+              const idx = header.indexOf(c.key);
+              let v = idx >= 0 ? vals[idx] : c.def;
+              obj[c.key] = c.type === "number" ? +v || 0 : v;
+            }
+            return obj;
+          });
+      }
+
+      function importCsv(text) {
+        const lines = text.split(/\r?\n/);
+        let section = null,
+          buf = [],
+          acc = [],
+          tx = [];
+        const flush = () => {
+          if (section === "accounts") acc = parseSection(buf, ACC_COLS);
+          if (section === "transactions") tx = parseSection(buf, TX_COLS);
+          buf = [];
+        };
+        for (const line of lines) {
+          const m = line.trim().match(/^\[(\w+)\]$/);
+          if (m) {
+            flush();
+            section = m[1];
+            continue;
+          }
+          if (line.trim() === "") continue;
+          buf.push(line);
+        }
+        flush();
+
+        // mutate in place — makeGrid holds these array references
+        accounts.length = 0;
+        acc.forEach((r) => accounts.push(r));
+        transactions.length = 0;
+        tx.forEach((r) => transactions.push(r));
+
+        renderAcc();
+        renderTx();
+        refresh();
+      }
+    </script>
+  </body>
+</html>
