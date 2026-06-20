@@ -1,4 +1,5 @@
 <!doctype html>
+<!-- TODO: Groups for transactions, that can be collapsed -->
 <html>
   <head>
     <meta charset="utf-8" />
@@ -246,6 +247,7 @@
         { key: "name", label: "Account", type: "text", def: "Account" },
         { key: "balance", label: "Balance $", type: "number", def: 1000 },
         { key: "rate", label: "Rate %", type: "number", def: 5 },
+        { key: "overdraft", label: "Overdraft?", type: "checkbox", def: false },
         { key: "limit", label: "Limit", type: "number", def: 0 },
       ];
       let accounts = [
@@ -285,7 +287,13 @@
           end: "6/2035",
         },
       ];
+
+      let zeroCrossings = []; // [{ account, x }]  x is in year units
+
       function cell(c, r, i) {
+        if (c.type === "checkbox") {
+          return `<input type="checkbox" data-i="${i}" data-key="${c.key}" ${r[c.key] ? "checked" : ""}>`;
+        }
         if (c.type === "select") {
           const opts = c
             .options()
@@ -298,6 +306,7 @@
         }
         return `<input data-i="${i}" data-key="${c.key}" type="${c.type}" value="${r[c.key]}">`;
       }
+
       function makeGrid(headId, bodyId, addId, cols, rows, refresh, onEdit) {
         $(headId).innerHTML =
           cols.map((c) => `<th>${c.label}</th>`).join("") + "<th></th>";
@@ -318,12 +327,18 @@
           const { i, key } = e.target.dataset;
           if (i == null) return;
           const col = cols.find((c) => c.key === key);
-          const val = col.type === "number" ? +e.target.value : e.target.value;
-          const old = rows[i][key]; // ← grab old value first
+          const val =
+            col.type === "number"
+              ? +e.target.value
+              : col.type === "checkbox"
+                ? e.target.checked
+                : e.target.value;
+          const old = rows[i][key];
           rows[i][key] = val;
-          if (onEdit) onEdit(key, old, val); // ← fire hook
+          if (onEdit) onEdit(key, old, val);
           refresh();
         });
+
         $(bodyId).addEventListener("click", (e) => {
           if (e.target.dataset.del == null) return;
           rows.splice(+e.target.dataset.del, 1);
@@ -370,18 +385,24 @@
       // ── MATH ──
 
       function buildData() {
+        const STEP = 1; // months per chart point: 1 = monthly, 3 = quarterly, 12 = yearly
         const years = +$("years").value || 0;
-        const labels = Array.from({ length: years + 1 }, (_, y) => "Yr " + y);
-
+        const labels = [];
+        for (let m = 0; m <= years * 12; m += STEP) {
+          const total = baseM - 1 + m;
+          labels.push(`${(total % 12) + 1}/${baseY + Math.floor(total / 12)}`); // "6/2026"
+        }
         const bal = {},
           rate = {},
           limit = {},
-          out = {};
+          out = {},
+          noNeg = {};
         for (const a of accounts) {
           bal[a.name] = +a.balance || 0;
           rate[a.name] = (+a.rate || 0) / 100 / 12;
           limit[a.name] = +a.limit || 0;
           out[a.name] = [];
+          noNeg[a.name] = !a.overdraft;
         }
         const exists = (name) => name !== "world" && bal[name] !== undefined;
         const isFull = (name) =>
@@ -392,6 +413,8 @@
         const fire = transactions.map((t) => offset(t.start)); // next fire time, in months
         const endAt = transactions.map((t) => offset(t.end));
 
+        const firstNeg = {};
+
         for (let m = 0; m <= years * 12; m++) {
           if (m > 0) {
             for (const a of accounts)
@@ -401,19 +424,39 @@
             transactions.forEach((t, k) => {
               if (ev[k] <= 0) return; // guard against 0 / negative → infinite loop
               // fire every occurrence that lands at or before this month
+
               while (fire[k] <= m && fire[k] <= endAt[k]) {
-                if (!isFull(t.dest)) {
-                  const amt = +t.amount || 0;
+                const amt = +t.amount || 0;
+                const blocked =
+                  isFull(t.dest) || // dest at limit
+                  (exists(t.source) &&
+                    noNeg[t.source] &&
+                    bal[t.source] - amt < 0); // would overdraw
+                if (!blocked || t.source == "World") {
                   if (exists(t.source)) bal[t.source] -= amt;
                   if (exists(t.dest)) bal[t.dest] += amt;
                 }
-                fire[k] += ev[k]; // advance to next occurrence
+                fire[k] += ev[k];
               }
             });
+            // record first below-zero crossing
+            for (const a of accounts) {
+              if (
+                firstNeg[a.name] === undefined &&
+                (Math.abs(bal[a.name]) < 500 ||
+                  (!noNeg[a.name] && bal[a.name] < 0))
+              )
+                // Note: Near-zero is considered within 500 zero
+                firstNeg[a.name] = m;
+            }
           }
-          if (m % 12 === 0)
+          if (m % STEP === 0)
             for (const a of accounts) out[a.name].push(Math.round(bal[a.name]));
         }
+
+        zeroCrossings = accounts
+          .filter((a) => firstNeg[a.name] !== undefined)
+          .map((a) => ({ account: a.name, x: firstNeg[a.name] / STEP }));
 
         return {
           labels,
@@ -422,17 +465,58 @@
             data: out[a.name],
             fill: true,
             tension: 0.2,
+            pointRadius: years > 2 ? 0 : undefined,
           })),
         };
       }
 
       load();
 
+      const zeroCrossPlugin = {
+        id: "zeroCross",
+        afterDatasetsDraw(chart) {
+          const { ctx, chartArea, scales } = chart;
+          const xScale = scales.x;
+
+          zeroCrossings.forEach((c, idx) => {
+            // pixel X for a fractional year (interpolate between integer-year ticks)
+            const lo = Math.floor(c.x),
+              hi = Math.ceil(c.x);
+            const pLo = xScale.getPixelForValue(lo);
+            const pHi = xScale.getPixelForValue(hi);
+            const px = lo === hi ? pLo : pLo + (pHi - pLo) * (c.x - lo);
+
+            ctx.save();
+            ctx.strokeStyle = "rgba(200,0,0,.8)";
+            ctx.setLineDash([4, 4]);
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.moveTo(px, chartArea.top);
+            ctx.lineTo(px, chartArea.bottom);
+            ctx.stroke();
+
+            ctx.setLineDash([]);
+            ctx.fillStyle = "rgba(200,0,0,1)";
+            ctx.font = "11px sans-serif";
+            ctx.textAlign = "center";
+            // stagger labels vertically so multiple crossings don't overlap
+            ctx.fillText(
+              `${c.account} → $0`,
+              px,
+              chartArea.top + 12 + idx * 14,
+            );
+            ctx.restore();
+          });
+        },
+      };
+
       const chart = new Chart($("chart"), {
         type: "line",
         data: buildData(),
+        plugins: [zeroCrossPlugin],
         options: {
           scales: {
+            x: { ticks: { autoSkip: true, maxTicksLimit: 12 } },
             y: {
               stacked: true,
               ticks: { callback: (v) => "$" + v.toLocaleString() },
@@ -584,7 +668,12 @@
             for (const c of cols) {
               const idx = header.indexOf(c.key);
               let v = idx >= 0 ? vals[idx] : c.def;
-              obj[c.key] = c.type === "number" ? +v || 0 : v;
+              obj[c.key] =
+                c.type === "number"
+                  ? +v || 0
+                  : c.type === "checkbox"
+                    ? v === "true" || v === true || v === "1"
+                    : v;
             }
             return obj;
           });
