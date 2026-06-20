@@ -79,6 +79,94 @@
         height: 500px;
         width: 50%;
       }
+
+      /* transaction groups */
+      .group-head td {
+        background: #eef2ff;
+        font-weight: 600;
+      }
+      .caret {
+        cursor: pointer;
+        display: inline-block;
+        width: 1em;
+        user-select: none;
+      }
+      .group-name {
+        width: auto;
+        min-width: 140px;
+        font-weight: 600;
+        border: 1px solid transparent;
+        background: transparent;
+      }
+      .group-name:hover,
+      .group-name:focus {
+        border: 1px solid #ccc;
+        background: #fff;
+      }
+      .row-actions {
+        white-space: nowrap;
+      }
+      /* per-row action menu */
+      .row-menu {
+        position: relative;
+        display: inline-block;
+      }
+      .row-menu > summary {
+        list-style: none;
+        cursor: pointer;
+        padding: 2px 8px;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+        background: #fff;
+        user-select: none;
+      }
+      .row-menu > summary::-webkit-details-marker {
+        display: none;
+      }
+      .row-menu .menu {
+        position: absolute;
+        right: 0;
+        top: 100%;
+        z-index: 50;
+        background: #fff;
+        border: 1px solid #ccc;
+        border-radius: 6px;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        min-width: 150px;
+        padding: 4px;
+      }
+      .row-menu .menu button {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 1.5rem;
+        width: 100%;
+        text-align: left;
+        border: none;
+        background: none;
+        padding: 5px 8px;
+        border-radius: 4px;
+        white-space: nowrap;
+      }
+      .row-menu .menu button:hover {
+        background: #eef2ff;
+      }
+      .row-menu .menu .sc {
+        color: #999;
+        font-size: 0.78em;
+        font-family: ui-monospace, "SF Mono", Menlo, monospace;
+      }
+      .row-menu .menu .danger {
+        color: #c00;
+      }
+      .row-menu .menu .danger .sc {
+        color: #d99;
+      }
+      .row-menu .menu .sep {
+        height: 1px;
+        background: #eee;
+        margin: 4px 0;
+      }
     </style>
   </head>
   <body>
@@ -113,6 +201,7 @@
           <tbody id="tx-rows"></tbody>
         </table>
         <button id="tx-add">+ Transaction</button>
+        <button id="tx-add-group">+ Group</button>
       </div>
     </div>
     <script>
@@ -219,6 +308,7 @@
 
       // ── PERSISTENCE ──
       const KEY = "finance-app";
+      let collapsedGroups = {};
 
       function save() {
         localStorage.setItem(
@@ -227,6 +317,7 @@
             accounts,
             transactions,
             years: +$("years").value,
+            collapsedGroups,
           }),
         );
       }
@@ -239,7 +330,15 @@
           if (d.accounts) accounts = d.accounts;
           if (d.transactions) transactions = d.transactions;
           if (d.years != null) $("years").value = d.years;
+          if (d.collapsedGroups) collapsedGroups = d.collapsedGroups;
         } catch {} // corrupt storage → ignore, use defaults
+      }
+
+      // every transaction needs a group bucket
+      function ensureGroups() {
+        transactions.forEach((t) => {
+          if (t.group == null || t.group === "") t.group = "General";
+        });
       }
 
       // ── ACCOUNT COLUMNS ──
@@ -258,11 +357,30 @@
       // ── TRANSACTION COLUMNS ──
 
       const TX_COLS = [
+        {
+          key: "group",
+          label: "Group",
+          type: "text",
+          def: "General",
+          hidden: true,
+        },
         { key: "name", label: "Name", type: "text", def: "Transaction" },
         { key: "amount", label: "Amount $", type: "number", def: 100 },
         { key: "every", label: "Per N mo", type: "number", def: 12 },
-        { key: "start", label: "Start (M/Y)", type: "text", def: "1/2026" },
-        { key: "end", label: "End (M/Y)", type: "text", def: "12/2999" },
+        {
+          key: "start",
+          label: "Start (M/Y)",
+          type: "text",
+          def: "1/2026",
+          month: true,
+        },
+        {
+          key: "end",
+          label: "End (M/Y)",
+          type: "text",
+          def: "12/2999",
+          month: true,
+        },
         {
           key: "source",
           label: "Source",
@@ -307,21 +425,123 @@
         return `<input data-i="${i}" data-key="${c.key}" type="${c.type}" value="${r[c.key]}">`;
       }
 
-      function makeGrid(headId, bodyId, addId, cols, rows, refresh, onEdit) {
-        $(headId).innerHTML =
-          cols.map((c) => `<th>${c.label}</th>`).join("") + "<th></th>";
+      const IS_MAC = /Mac|iPhone|iPad|iPod/.test(
+        navigator.platform || navigator.userAgent || "",
+      );
+      const MOD = IS_MAC ? "⌘⇧" : "Ctrl+Shift+";
+      const SC_LABEL = {
+        add: IS_MAC ? "⇧⏎" : "Shift+Enter",
+        up: MOD + "↑",
+        down: MOD + "↓",
+        top: MOD + (IS_MAC ? "↖" : "Home"),
+        bottom: MOD + (IS_MAC ? "↘" : "End"),
+        prevgrp: (IS_MAC ? "⌥⇧" : "Alt+Shift+") + "↑",
+        nextgrp: (IS_MAC ? "⌥⇧" : "Alt+Shift+") + "↓",
+        del: MOD + (IS_MAC ? "⌫" : "Bksp"),
+      };
 
-        function render() {
+      // shift a "M/Y" string by whole months / years (returns null if unparseable)
+      function bumpMY(val, dMonth, dYear) {
+        const [ms, ys] = String(val).split("/");
+        let m = parseInt(ms, 10),
+          y = parseInt(ys, 10);
+        if (!Number.isFinite(m) || !Number.isFinite(y)) return null;
+        m += dMonth;
+        y += Math.floor((m - 1) / 12);
+        m = ((((m - 1) % 12) + 12) % 12) + 1;
+        y += dYear;
+        return m + "/" + y;
+      }
+
+      const escAttr = (s) =>
+        String(s)
+          .replace(/&/g, "&amp;")
+          .replace(/"/g, "&quot;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;");
+
+      function makeGrid(
+        headId,
+        bodyId,
+        addId,
+        cols,
+        rows,
+        refresh,
+        onEdit,
+        opts,
+      ) {
+        opts = opts || {};
+        const groupBy = opts.groupBy;
+        const collapsed = opts.collapsed || {};
+        const onCollapseChange = opts.onCollapseChange;
+        const visCols = cols.filter((c) => !c.hidden);
+
+        $(headId).innerHTML =
+          visCols.map((c) => `<th>${c.label}</th>`).join("") + "<th></th>";
+
+        function renderFlat() {
           $(bodyId).innerHTML = rows
             .map(
               (r, i) => `
       <tr>
-        ${cols.map((c) => `<td>${cell(c, r, i)}</td>`).join("")}
+        ${visCols.map((c) => `<td>${cell(c, r, i)}</td>`).join("")}
         <td><button data-del="${i}">✕</button></td>
       </tr>`,
             )
             .join("");
         }
+
+        function renderGrouped() {
+          const span = visCols.length + 1;
+          const order = [],
+            map = {};
+          rows.forEach((r, i) => {
+            const g =
+              r[groupBy] == null || r[groupBy] === "" ? "General" : r[groupBy];
+            if (!(g in map)) {
+              map[g] = [];
+              order.push(g);
+            }
+            map[g].push(i);
+          });
+
+          let html = "";
+          for (const g of order) {
+            const off = !!collapsed[g];
+            html += `<tr class="group-head" data-group="${escAttr(g)}">
+        <td colspan="${span}">
+          <span class="caret" data-toggle="${escAttr(g)}">${off ? "▶" : "▼"}</span>
+          <input class="group-name" data-group="${escAttr(g)}" value="${escAttr(g)}">
+        </td>
+      </tr>`;
+            for (const i of map[g]) {
+              html += `<tr class="grp-row"${off ? ' style="display:none"' : ""}>
+        ${visCols.map((c) => `<td>${cell(c, rows[i], i)}</td>`).join("")}
+        <td class="row-actions">
+          <details class="row-menu">
+            <summary title="Actions">⋯</summary>
+            <div class="menu">
+              <button data-act="add" data-i="${i}">＋ Add row below<span class="sc">${SC_LABEL.add}</span></button>
+              <div class="sep"></div>
+              <button data-act="up" data-i="${i}">↑ Move up<span class="sc">${SC_LABEL.up}</span></button>
+              <button data-act="down" data-i="${i}">↓ Move down<span class="sc">${SC_LABEL.down}</span></button>
+              <button data-act="top" data-i="${i}">⤒ Move to top<span class="sc">${SC_LABEL.top}</span></button>
+              <button data-act="bottom" data-i="${i}">⤓ Move to bottom<span class="sc">${SC_LABEL.bottom}</span></button>
+              <div class="sep"></div>
+              <button data-act="prevgrp" data-i="${i}">↰ Prev group<span class="sc">${SC_LABEL.prevgrp}</span></button>
+              <button data-act="nextgrp" data-i="${i}">↳ Next group<span class="sc">${SC_LABEL.nextgrp}</span></button>
+              <div class="sep"></div>
+              <button class="danger" data-act="del" data-i="${i}">✕ Delete<span class="sc">${SC_LABEL.del}</span></button>
+            </div>
+          </details>
+        </td>
+      </tr>`;
+            }
+          }
+          $(bodyId).innerHTML = html;
+        }
+
+        const render = groupBy ? renderGrouped : renderFlat;
 
         $(bodyId).addEventListener("input", (e) => {
           const { i, key } = e.target.dataset;
@@ -339,33 +559,267 @@
           refresh();
         });
 
+        // group controls (only fire when grouped markup is present)
+        $(bodyId).addEventListener("click", (e) => {
+          const t = e.target;
+          if (t.classList.contains("caret")) {
+            const g = t.dataset.toggle;
+            collapsed[g] = !collapsed[g];
+            render();
+            if (onCollapseChange) onCollapseChange();
+          }
+        });
+
+        // rename a whole group (commit on blur / Enter)
+        $(bodyId).addEventListener("change", (e) => {
+          if (!e.target.classList.contains("group-name")) return;
+          const oldG = e.target.dataset.group;
+          const newG = e.target.value.trim() || "General";
+          if (newG === oldG) return;
+          rows.forEach((r) => {
+            const g =
+              r[groupBy] == null || r[groupBy] === "" ? "General" : r[groupBy];
+            if (g === oldG) r[groupBy] = newG;
+          });
+          if (oldG in collapsed) {
+            collapsed[newG] = collapsed[oldG];
+            delete collapsed[oldG];
+          }
+          render();
+          refresh();
+        });
+
+        // ── group-aware move helpers (operate on the flat rows array) ──
+        const gOf = (r) =>
+          r[groupBy] == null || r[groupBy] === "" ? "General" : r[groupBy];
+        const idxOfGroup = (g) =>
+          rows
+            .map((r, k) => [r, k])
+            .filter(([r]) => gOf(r) === g)
+            .map(([, k]) => k);
+        const groupSeq = () => {
+          const seen = [];
+          rows.forEach((r) => {
+            const g = gOf(r);
+            if (!seen.includes(g)) seen.push(g);
+          });
+          return seen;
+        };
+        // pull rows[from] out and reinsert before current rows[before] (before===len → end)
+        function moveRowTo(from, before) {
+          const r = rows[from];
+          rows.splice(from, 1);
+          let t = from < before ? before - 1 : before;
+          t = Math.max(0, Math.min(rows.length, t));
+          rows.splice(t, 0, r);
+        }
+        function moveWithin(i, dir) {
+          const g = gOf(rows[i]);
+          const idxs = idxOfGroup(g);
+          const pos = idxs.indexOf(i);
+          if (dir < 0) {
+            if (pos > 0)
+              moveRowTo(i, idxs[pos - 1]); // swap up
+            else crossGroup(i, -1); // top of group → previous group
+          } else {
+            if (pos < idxs.length - 1)
+              moveRowTo(i, idxs[pos + 1] + 1); // swap down
+            else crossGroup(i, 1); // bottom of group → next group
+          }
+        }
+        function moveEdge(i, which) {
+          const idxs = idxOfGroup(gOf(rows[i]));
+          if (which === "top") moveRowTo(i, idxs[0]);
+          else moveRowTo(i, idxs[idxs.length - 1] + 1);
+        }
+        function crossGroup(i, dir) {
+          const seq = groupSeq();
+          const gi = seq.indexOf(gOf(rows[i]));
+          const tgt = seq[gi + dir];
+          if (tgt == null) return; // no neighbour group → no-op
+          const members = idxOfGroup(tgt);
+          if (dir > 0) {
+            // land at TOP of next group
+            const before = members[0];
+            rows[i][groupBy] = tgt;
+            moveRowTo(i, before);
+          } else {
+            // land at BOTTOM of previous group
+            const before = members[members.length - 1] + 1;
+            rows[i][groupBy] = tgt;
+            moveRowTo(i, before);
+          }
+        }
+        function doAction(i, act) {
+          if (i < 0 || i >= rows.length) return;
+          if (act === "add") {
+            addRow(gOf(rows[i]), i); // self-renders + focuses new row
+            return;
+          }
+          if (act === "del") rows.splice(i, 1);
+          else if (act === "up") moveWithin(i, -1);
+          else if (act === "down") moveWithin(i, 1);
+          else if (act === "top") moveEdge(i, "top");
+          else if (act === "bottom") moveEdge(i, "bottom");
+          else if (act === "prevgrp") crossGroup(i, -1);
+          else if (act === "nextgrp") crossGroup(i, 1);
+          render();
+          refresh();
+        }
+
+        // menu actions
+        $(bodyId).addEventListener("click", (e) => {
+          const btn = e.target.closest("button[data-act]");
+          if (!btn) return;
+          doAction(+btn.dataset.i, btn.dataset.act);
+        });
+
         $(bodyId).addEventListener("click", (e) => {
           if (e.target.dataset.del == null) return;
           rows.splice(+e.target.dataset.del, 1);
           render();
           refresh();
         });
-        function addRow() {
-          rows.push(Object.fromEntries(cols.map((c) => [c.key, c.def])));
+        // add a row; optionally into a specific group, right after afterIndex
+        function addRow(group, afterIndex) {
+          const row = Object.fromEntries(cols.map((c) => [c.key, c.def]));
+          if (groupBy && group != null) row[groupBy] = group;
+          if (afterIndex != null && afterIndex >= 0)
+            rows.splice(afterIndex + 1, 0, row);
+          else rows.push(row);
           render();
           refresh();
-          // focus first cell of the new row so they keep typing
-          const first = $(bodyId).querySelector(
-            "tr:last-child input, tr:last-child select",
-          );
+          // focus + select the first editable cell of the row we just added
+          const ni = rows.indexOf(row);
+          const first = $(bodyId).querySelector(`[data-i="${ni}"]`);
           if (first) {
             first.focus();
             if (first.select) first.select();
           }
         }
 
-        $(addId).addEventListener("click", addRow);
+        $(addId).addEventListener("click", () => addRow());
         render();
 
+        const SC_KEYS = {
+          ArrowUp: "up",
+          ArrowDown: "down",
+          Home: "top",
+          End: "bottom",
+          Backspace: "del",
+        };
+
         $(bodyId).addEventListener("keydown", (e) => {
-          if (e.key === "Enter" && e.shiftKey) {
-            // ← Shift + Enter
+          if (e.target.classList.contains("group-name")) return;
+
+          // Ctrl/Cmd+Shift+<key> → row actions (grouped grids only)
+          if (
+            groupBy &&
+            (e.ctrlKey || e.metaKey) &&
+            e.shiftKey &&
+            SC_KEYS[e.key]
+          ) {
+            const cell = e.target.closest("[data-i]");
+            if (!cell) return;
             e.preventDefault();
+            const obj = rows[+cell.dataset.i];
+            const key = cell.dataset.key;
+            doAction(+cell.dataset.i, SC_KEYS[e.key]);
+            // keep focus on the same field of the moved row (skip if deleted)
+            const ni = rows.indexOf(obj);
+            if (ni >= 0 && key) {
+              const back = $(bodyId).querySelector(
+                `[data-i="${ni}"][data-key="${key}"]`,
+              );
+              if (back) back.focus();
+            }
+            return;
+          }
+
+          // Alt+Shift+Up/Down → jump to prev/next group
+          if (
+            groupBy &&
+            e.altKey &&
+            e.shiftKey &&
+            (e.key === "ArrowUp" || e.key === "ArrowDown")
+          ) {
+            const cell = e.target.closest("[data-i]");
+            if (!cell) return;
+            e.preventDefault();
+            const obj = rows[+cell.dataset.i];
+            const key = cell.dataset.key;
+            doAction(
+              +cell.dataset.i,
+              e.key === "ArrowUp" ? "prevgrp" : "nextgrp",
+            );
+            const ni = rows.indexOf(obj);
+            if (ni >= 0 && key) {
+              const back = $(bodyId).querySelector(
+                `[data-i="${ni}"][data-key="${key}"]`,
+              );
+              if (back) back.focus();
+            }
+            return;
+          }
+
+          // Ctrl/Cmd+Arrow (no shift) → move to prev/next row, same column.
+          if (
+            (e.ctrlKey || e.metaKey) &&
+            !e.shiftKey &&
+            (e.key === "ArrowUp" || e.key === "ArrowDown")
+          ) {
+            const el = e.target;
+            const key = el.dataset && el.dataset.key;
+            if (!key) return;
+            e.preventDefault();
+            const dir = e.key === "ArrowUp" ? -1 : 1;
+            const fields = [
+              ...$(bodyId).querySelectorAll(`[data-key="${key}"]`),
+            ].filter((f) => f.offsetParent !== null); // skip collapsed/hidden rows
+            const target = fields[fields.indexOf(el) + dir];
+            if (target) {
+              target.focus();
+              if (target.select) target.select();
+            }
+            return;
+          }
+
+          // Month columns: ↑/↓ = ±1 month, Shift+↑/↓ = ±1 year
+          if (
+            !e.ctrlKey &&
+            !e.metaKey &&
+            !e.altKey &&
+            (e.key === "ArrowUp" || e.key === "ArrowDown")
+          ) {
+            const el = e.target;
+            const key = el.dataset && el.dataset.key;
+            const col = cols.find((c) => c.key === key);
+            if (col && col.month) {
+              const dir = e.key === "ArrowUp" ? 1 : -1;
+              const next = e.shiftKey
+                ? bumpMY(el.value, 0, dir)
+                : bumpMY(el.value, dir, 0);
+              if (next != null) {
+                e.preventDefault();
+                el.value = next;
+                rows[+el.dataset.i][key] = next;
+                refresh();
+                return;
+              }
+            }
+          }
+
+          if (e.key === "Enter" && e.shiftKey) {
+            // ← Shift + Enter: add a row inside the currently focused group
+            e.preventDefault();
+            if (groupBy) {
+              const cell = e.target.closest("[data-i]");
+              if (cell) {
+                const i = +cell.dataset.i;
+                addRow(gOf(rows[i]), i);
+                return;
+              }
+            }
             addRow();
           }
         });
@@ -471,6 +925,7 @@
       }
 
       load();
+      ensureGroups();
 
       const zeroCrossPlugin = {
         id: "zeroCross",
@@ -579,6 +1034,12 @@
         TX_COLS,
         transactions,
         refresh,
+        null,
+        {
+          groupBy: "group",
+          collapsed: collapsedGroups,
+          onCollapseChange: save,
+        },
       );
 
       const renderAcc = makeGrid(
@@ -598,6 +1059,28 @@
         },
       );
       $("years").addEventListener("input", refresh);
+
+      // + Group → make a fresh empty-ish group (one starter row, expanded)
+      $("tx-add-group").addEventListener("click", () => {
+        let n = 1,
+          name;
+        do {
+          name = "Group " + n++;
+        } while (transactions.some((t) => (t.group || "General") === name));
+        const row = Object.fromEntries(TX_COLS.map((c) => [c.key, c.def]));
+        row.group = name;
+        transactions.push(row);
+        collapsedGroups[name] = false;
+        renderTx();
+        refresh();
+      });
+
+      // single open menu + close on outside click
+      document.addEventListener("click", (e) => {
+        document.querySelectorAll("details.row-menu[open]").forEach((d) => {
+          if (!d.contains(e.target)) d.removeAttribute("open");
+        });
+      });
 
       // CSV HElpers
       // ── CSV ──
