@@ -5,11 +5,48 @@
     <meta charset="utf-8" />
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #fff;
+        --fg: #222;
+        --muted: #555;
+        --muted2: #999;
+        --border: #ccc;
+        --th-bg: #f5f5f5;
+        --group-bg: #eef2ff;
+        --surface: #fff;
+        --field-bg: #fff;
+        --hover: #eef2ff;
+        --sep: #eee;
+        --danger: #c00;
+        --danger-soft: #d99;
+        --shadow: rgba(0, 0, 0, 0.15);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #1a1b1e;
+          --fg: #e6e6e6;
+          --muted: #b3b6bb;
+          --muted2: #888c92;
+          --border: #3a3d42;
+          --th-bg: #25262b;
+          --group-bg: #2a3050;
+          --surface: #25262b;
+          --field-bg: #1f2024;
+          --hover: #2f3442;
+          --sep: #34363c;
+          --danger: #ff7676;
+          --danger-soft: #a06060;
+          --shadow: rgba(0, 0, 0, 0.5);
+        }
+      }
+
       body {
         font-family: system-ui, sans-serif;
         margin: 0;
         padding: 1.5rem;
-        color: #222;
+        color: var(--fg);
+        background: var(--bg);
       }
 
       /* two-column layout: accounts+chart left, transactions right */
@@ -39,12 +76,12 @@
       }
       th,
       td {
-        border: 1px solid #ccc;
+        border: 1px solid var(--border);
         padding: 4px 8px;
         text-align: left;
       }
       th {
-        background: #f5f5f5;
+        background: var(--th-bg);
         font-weight: 600;
       }
 
@@ -82,7 +119,7 @@
 
       /* transaction groups */
       .group-head td {
-        background: #eef2ff;
+        background: var(--group-bg);
         font-weight: 600;
       }
       .group-head .head-inner {
@@ -100,13 +137,14 @@
         width: auto;
         min-width: 600px;
         font-weight: 600;
+        color: inherit;
         border: 1px solid transparent;
         background: transparent;
       }
       .group-name:hover,
       .group-name:focus {
-        border: 1px solid #ccc;
-        background: #fff;
+        border: 1px solid var(--border);
+        background: var(--field-bg);
       }
       .group-tools {
         margin-left: auto;
@@ -120,7 +158,7 @@
         gap: 0.2rem;
         font-weight: 400;
         font-size: 0.85em;
-        color: #555;
+        color: var(--muted);
         cursor: pointer;
       }
       .group-tools .grp-active {
@@ -133,7 +171,7 @@
       }
       .grp-disabled .group-name {
         text-decoration: line-through;
-        color: #999;
+        color: var(--muted2);
       }
       tr.grp-row.grp-disabled td {
         opacity: 0.45;
@@ -150,9 +188,9 @@
         list-style: none;
         cursor: pointer;
         padding: 2px 8px;
-        border: 1px solid #ccc;
+        border: 1px solid var(--border);
         border-radius: 4px;
-        background: #fff;
+        background: var(--surface);
         user-select: none;
       }
       .row-menu > summary::-webkit-details-marker {
@@ -163,10 +201,10 @@
         right: 0;
         top: 100%;
         z-index: 50;
-        background: #fff;
-        border: 1px solid #ccc;
+        background: var(--surface);
+        border: 1px solid var(--border);
         border-radius: 6px;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+        box-shadow: 0 4px 12px var(--shadow);
         min-width: 150px;
         padding: 4px;
       }
@@ -177,6 +215,7 @@
         gap: 1.5rem;
         width: 100%;
         text-align: left;
+        color: inherit;
         border: none;
         background: none;
         padding: 5px 8px;
@@ -184,22 +223,22 @@
         white-space: nowrap;
       }
       .row-menu .menu button:hover {
-        background: #eef2ff;
+        background: var(--hover);
       }
       .row-menu .menu .sc {
-        color: #999;
+        color: var(--muted2);
         font-size: 0.78em;
         font-family: ui-monospace, "SF Mono", Menlo, monospace;
       }
       .row-menu .menu .danger {
-        color: #c00;
+        color: var(--danger);
       }
       .row-menu .menu .danger .sc {
-        color: #d99;
+        color: var(--danger-soft);
       }
       .row-menu .menu .sep {
         height: 1px;
-        background: #eee;
+        background: var(--sep);
         margin: 4px 0;
       }
     </style>
@@ -532,10 +571,10 @@
           $(bodyId).innerHTML = rows
             .map(
               (r, i) => `
-      <tr>
-        ${visCols.map((c) => `<td>${cell(c, r, i)}</td>`).join("")}
-        <td><button data-del="${i}">✕</button></td>
-      </tr>`,
+            <tr>
+              ${visCols.map((c) => `<td>${cell(c, r, i)}</td>`).join("")}
+              <td><button data-del="${i}">✕</button></td>
+            </tr>`,
             )
             .join("");
         }
@@ -559,43 +598,43 @@
             const off = !!collapsed[g];
             const dead = !!disabled[g];
             html += `<tr class="group-head${dead ? " grp-disabled" : ""}" data-group="${escAttr(g)}">
-        <td colspan="${span}">
-          <div class="head-inner">
-            <span class="caret" data-toggle="${escAttr(g)}">${off ? "▶" : "▼"}</span>
-            <input class="group-name" data-group="${escAttr(g)}" value="${escAttr(g)}">
-            <span class="group-tools">
-              <label class="grp-active-wrap" title="Include this group in the projection">
-                <input type="checkbox" class="grp-active" data-group="${escAttr(g)}"${dead ? "" : " checked"}>
-                active
-              </label>
-              <button class="grp-up" data-group="${escAttr(g)}" title="Move group up">▲</button>
-              <button class="grp-down" data-group="${escAttr(g)}" title="Move group down">▼</button>
-            </span>
-          </div>
-        </td>
-      </tr>`;
+              <td colspan="${span}">
+                <div class="head-inner">
+                  <span class="caret" data-toggle="${escAttr(g)}">${off ? "▶" : "▼"}</span>
+                  <input class="group-name" data-group="${escAttr(g)}" value="${escAttr(g)}">
+                  <span class="group-tools">
+                    <label class="grp-active-wrap" title="Include this group in the projection">
+                      <input type="checkbox" class="grp-active" data-group="${escAttr(g)}"${dead ? "" : " checked"}>
+                      active
+                    </label>
+                    <button class="grp-up" data-group="${escAttr(g)}" title="Move group up">▲</button>
+                    <button class="grp-down" data-group="${escAttr(g)}" title="Move group down">▼</button>
+                  </span>
+                </div>
+              </td>
+            </tr>`;
             for (const i of map[g]) {
               html += `<tr class="grp-row${dead ? " grp-disabled" : ""}"${off ? ' style="display:none"' : ""}>
-        ${visCols.map((c) => `<td>${cell(c, rows[i], i)}</td>`).join("")}
-        <td class="row-actions">
-          <details class="row-menu">
-            <summary title="Actions">⋯</summary>
-            <div class="menu">
-              <button data-act="add" data-i="${i}">＋ Add row below<span class="sc">${SC_LABEL.add}</span></button>
-              <div class="sep"></div>
-              <button data-act="up" data-i="${i}">↑ Move up<span class="sc">${SC_LABEL.up}</span></button>
-              <button data-act="down" data-i="${i}">↓ Move down<span class="sc">${SC_LABEL.down}</span></button>
-              <button data-act="top" data-i="${i}">⤒ Move to top<span class="sc">${SC_LABEL.top}</span></button>
-              <button data-act="bottom" data-i="${i}">⤓ Move to bottom<span class="sc">${SC_LABEL.bottom}</span></button>
-              <div class="sep"></div>
-              <button data-act="prevgrp" data-i="${i}">↰ Prev group<span class="sc">${SC_LABEL.prevgrp}</span></button>
-              <button data-act="nextgrp" data-i="${i}">↳ Next group<span class="sc">${SC_LABEL.nextgrp}</span></button>
-              <div class="sep"></div>
-              <button class="danger" data-act="del" data-i="${i}">✕ Delete<span class="sc">${SC_LABEL.del}</span></button>
-            </div>
-          </details>
-        </td>
-      </tr>`;
+              ${visCols.map((c) => `<td>${cell(c, rows[i], i)}</td>`).join("")}
+              <td class="row-actions">
+                <details class="row-menu">
+                  <summary title="Actions">⋯</summary>
+                  <div class="menu">
+                    <button data-act="add" data-i="${i}">＋ Add row below<span class="sc">${SC_LABEL.add}</span></button>
+                    <div class="sep"></div>
+                    <button data-act="up" data-i="${i}">↑ Move up<span class="sc">${SC_LABEL.up}</span></button>
+                    <button data-act="down" data-i="${i}">↓ Move down<span class="sc">${SC_LABEL.down}</span></button>
+                    <button data-act="top" data-i="${i}">⤒ Move to top<span class="sc">${SC_LABEL.top}</span></button>
+                    <button data-act="bottom" data-i="${i}">⤓ Move to bottom<span class="sc">${SC_LABEL.bottom}</span></button>
+                    <div class="sep"></div>
+                    <button data-act="prevgrp" data-i="${i}">↰ Prev group<span class="sc">${SC_LABEL.prevgrp}</span></button>
+                    <button data-act="nextgrp" data-i="${i}">↳ Next group<span class="sc">${SC_LABEL.nextgrp}</span></button>
+                    <div class="sep"></div>
+                    <button class="danger" data-act="del" data-i="${i}">✕ Delete<span class="sc">${SC_LABEL.del}</span></button>
+                  </div>
+                </details>
+              </td>
+            </tr>`;
             }
           }
           $(bodyId).innerHTML = html;
@@ -1090,7 +1129,10 @@
             if (px < chartArea.left - 0.5 || px > chartArea.right + 0.5) return; // off-screen (cropped)
 
             ctx.save();
-            ctx.strokeStyle = "rgba(200,0,0,.8)";
+            const red = mqDark.matches
+              ? "rgba(255,110,110,0.95)"
+              : "rgba(200,0,0,.8)";
+            ctx.strokeStyle = red;
             ctx.setLineDash([4, 4]);
             ctx.lineWidth = 1.5;
             ctx.beginPath();
@@ -1099,7 +1141,7 @@
             ctx.stroke();
 
             ctx.setLineDash([]);
-            ctx.fillStyle = "rgba(200,0,0,1)";
+            ctx.fillStyle = red;
             ctx.font = "11px sans-serif";
             ctx.textAlign = "center";
             // stagger labels vertically so multiple crossings don't overlap
@@ -1113,6 +1155,8 @@
         },
       };
 
+      const mqDark = matchMedia("(prefers-color-scheme: dark)");
+      Chart.defaults.color = mqDark.matches ? "#cfd2d6" : "#333";
       const chart = new Chart($("chart"), {
         type: "line",
         data: buildData(),
@@ -1162,6 +1206,24 @@
         const idx = startMonthIndex();
         chart.options.scales.x.min = idx > 0 ? idx : undefined;
       }
+      function themeChart() {
+        const dark = mqDark.matches;
+        Chart.defaults.color = dark ? "#cfd2d6" : "#333";
+        const grid = dark ? "rgba(255,255,255,0.09)" : "rgba(0,0,0,0.08)";
+        const x = chart.options.scales.x,
+          y = chart.options.scales.y;
+        x.grid = { ...(x.grid || {}), color: grid };
+        y.grid = { ...(y.grid || {}), color: grid };
+        x.ticks = { ...(x.ticks || {}), color: Chart.defaults.color };
+        y.ticks = { ...(y.ticks || {}), color: Chart.defaults.color };
+        chart.options.plugins.legend.labels = {
+          ...(chart.options.plugins.legend.labels || {}),
+          color: Chart.defaults.color,
+        };
+        chart.update();
+      }
+      mqDark.addEventListener("change", themeChart);
+      themeChart();
       applyCrop();
       chart.update();
 

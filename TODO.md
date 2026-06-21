@@ -1,0 +1,1 @@
+- Inflation: Add a column to transactions where users can enter expected inflation of that transaction amount
