@@ -85,6 +85,11 @@
         background: #eef2ff;
         font-weight: 600;
       }
+      .group-head .head-inner {
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+      }
       .caret {
         cursor: pointer;
         display: inline-block;
@@ -102,6 +107,36 @@
       .group-name:focus {
         border: 1px solid #ccc;
         background: #fff;
+      }
+      .group-tools {
+        margin-left: auto;
+        display: flex;
+        align-items: center;
+        gap: 0.3rem;
+      }
+      .group-tools .grp-active-wrap {
+        display: inline-flex;
+        align-items: center;
+        gap: 0.2rem;
+        font-weight: 400;
+        font-size: 0.85em;
+        color: #555;
+        cursor: pointer;
+      }
+      .group-tools .grp-active {
+        width: auto;
+        cursor: pointer;
+      }
+      .group-tools button {
+        padding: 0 7px;
+        line-height: 1.5;
+      }
+      .grp-disabled .group-name {
+        text-decoration: line-through;
+        color: #999;
+      }
+      tr.grp-row.grp-disabled td {
+        opacity: 0.45;
       }
       .row-actions {
         white-space: nowrap;
@@ -200,7 +235,6 @@
           </thead>
           <tbody id="tx-rows"></tbody>
         </table>
-        <button id="tx-add">+ Transaction</button>
         <button id="tx-add-group">+ Group</button>
       </div>
     </div>
@@ -309,6 +343,7 @@
       // ── PERSISTENCE ──
       const KEY = "finance-app";
       let collapsedGroups = {};
+      let disabledGroups = {};
 
       function save() {
         localStorage.setItem(
@@ -318,6 +353,7 @@
             transactions,
             years: +$("years").value,
             collapsedGroups,
+            disabledGroups,
           }),
         );
       }
@@ -331,6 +367,7 @@
           if (d.transactions) transactions = d.transactions;
           if (d.years != null) $("years").value = d.years;
           if (d.collapsedGroups) collapsedGroups = d.collapsedGroups;
+          if (d.disabledGroups) disabledGroups = d.disabledGroups;
         } catch {} // corrupt storage → ignore, use defaults
       }
 
@@ -365,7 +402,14 @@
           hidden: true,
         },
         { key: "name", label: "Name", type: "text", def: "Transaction" },
-        { key: "amount", label: "Amount $", type: "number", def: 100 },
+        {
+          key: "amount",
+          label: "Amount $",
+          type: "number",
+          def: 100,
+          step: 100,
+          stepBig: 1000,
+        },
         { key: "every", label: "Per N mo", type: "number", def: 12 },
         {
           key: "start",
@@ -473,6 +517,7 @@
         opts = opts || {};
         const groupBy = opts.groupBy;
         const collapsed = opts.collapsed || {};
+        const disabled = opts.disabled || {};
         const onCollapseChange = opts.onCollapseChange;
         const visCols = cols.filter((c) => !c.hidden);
 
@@ -508,14 +553,25 @@
           let html = "";
           for (const g of order) {
             const off = !!collapsed[g];
-            html += `<tr class="group-head" data-group="${escAttr(g)}">
+            const dead = !!disabled[g];
+            html += `<tr class="group-head${dead ? " grp-disabled" : ""}" data-group="${escAttr(g)}">
         <td colspan="${span}">
-          <span class="caret" data-toggle="${escAttr(g)}">${off ? "▶" : "▼"}</span>
-          <input class="group-name" data-group="${escAttr(g)}" value="${escAttr(g)}">
+          <div class="head-inner">
+            <span class="caret" data-toggle="${escAttr(g)}">${off ? "▶" : "▼"}</span>
+            <input class="group-name" data-group="${escAttr(g)}" value="${escAttr(g)}">
+            <span class="group-tools">
+              <label class="grp-active-wrap" title="Include this group in the projection">
+                <input type="checkbox" class="grp-active" data-group="${escAttr(g)}"${dead ? "" : " checked"}>
+                active
+              </label>
+              <button class="grp-up" data-group="${escAttr(g)}" title="Move group up">▲</button>
+              <button class="grp-down" data-group="${escAttr(g)}" title="Move group down">▼</button>
+            </span>
+          </div>
         </td>
       </tr>`;
             for (const i of map[g]) {
-              html += `<tr class="grp-row"${off ? ' style="display:none"' : ""}>
+              html += `<tr class="grp-row${dead ? " grp-disabled" : ""}"${off ? ' style="display:none"' : ""}>
         ${visCols.map((c) => `<td>${cell(c, rows[i], i)}</td>`).join("")}
         <td class="row-actions">
           <details class="row-menu">
@@ -567,7 +623,25 @@
             collapsed[g] = !collapsed[g];
             render();
             if (onCollapseChange) onCollapseChange();
+            return;
           }
+          if (t.classList.contains("grp-up")) {
+            moveGroup(t.dataset.group, -1);
+            return;
+          }
+          if (t.classList.contains("grp-down")) {
+            moveGroup(t.dataset.group, 1);
+          }
+        });
+
+        // toggle a whole group in/out of the projection
+        $(bodyId).addEventListener("change", (e) => {
+          if (!e.target.classList.contains("grp-active")) return;
+          const g = e.target.dataset.group;
+          if (e.target.checked) delete disabled[g];
+          else disabled[g] = true;
+          render(); // dim/undim rows
+          refresh(); // recompute chart + save
         });
 
         // rename a whole group (commit on blur / Enter)
@@ -584,6 +658,10 @@
           if (oldG in collapsed) {
             collapsed[newG] = collapsed[oldG];
             delete collapsed[oldG];
+          }
+          if (oldG in disabled) {
+            disabled[newG] = disabled[oldG];
+            delete disabled[oldG];
           }
           render();
           refresh();
@@ -605,6 +683,23 @@
           });
           return seen;
         };
+        // reorder whole groups by rebuilding rows in the new group order
+        function moveGroup(g, dir) {
+          const seq = groupSeq();
+          const gi = seq.indexOf(g);
+          const ti = gi + dir;
+          if (ti < 0 || ti >= seq.length) return; // already at the edge
+          [seq[gi], seq[ti]] = [seq[ti], seq[gi]];
+          const buckets = {};
+          seq.forEach((n) => (buckets[n] = []));
+          rows.forEach((r) => buckets[gOf(r)].push(r));
+          const flat = [];
+          seq.forEach((n) => buckets[n].forEach((r) => flat.push(r)));
+          rows.length = 0;
+          flat.forEach((r) => rows.push(r));
+          render();
+          refresh();
+        }
         // pull rows[from] out and reinsert before current rows[before] (before===len → end)
         function moveRowTo(from, before) {
           const r = rows[from];
@@ -698,7 +793,7 @@
           }
         }
 
-        $(addId).addEventListener("click", () => addRow());
+        $(addId)?.addEventListener("click", () => addRow());
         render();
 
         const SC_KEYS = {
@@ -711,6 +806,31 @@
 
         $(bodyId).addEventListener("keydown", (e) => {
           if (e.target.classList.contains("group-name")) return;
+
+          // Stepped columns (e.g. Amount): Shift+↑/↓ = ±step,
+          // Ctrl/Cmd+Shift+↑/↓ = ±stepBig. Takes priority over row-move here.
+          {
+            const el = e.target;
+            const key = el.dataset && el.dataset.key;
+            const col = key && cols.find((c) => c.key === key);
+            if (
+              col &&
+              col.step &&
+              e.shiftKey &&
+              !e.altKey &&
+              (e.key === "ArrowUp" || e.key === "ArrowDown")
+            ) {
+              const big = e.ctrlKey || e.metaKey;
+              const delta =
+                (e.key === "ArrowUp" ? 1 : -1) * (big ? col.stepBig : col.step);
+              e.preventDefault();
+              const next = (+el.value || 0) + delta;
+              el.value = next;
+              rows[+el.dataset.i][key] = next;
+              refresh();
+              return;
+            }
+          }
 
           // Ctrl/Cmd+Shift+<key> → row actions (grouped grids only)
           if (
@@ -849,18 +969,25 @@
         const bal = {},
           rate = {},
           limit = {},
+          hasLimit = {},
           out = {},
-          noNeg = {};
+          noNeg = {},
+          inZero = {};
         for (const a of accounts) {
           bal[a.name] = +a.balance || 0;
           rate[a.name] = (+a.rate || 0) / 100 / 12;
           limit[a.name] = +a.limit || 0;
+          // limit is active if it's non-zero, OR the account starts negative
+          // (a debt being paid down) — there 0 means "don't pass zero",
+          // not "unset". Accounts that start positive keep 0 = unset.
+          hasLimit[a.name] = limit[a.name] !== 0 || bal[a.name] < 0;
           out[a.name] = [];
           noNeg[a.name] = !a.overdraft;
+          inZero[a.name] = a.balance === 0;
         }
         const exists = (name) => name !== "world" && bal[name] !== undefined;
         const isFull = (name) =>
-          exists(name) && limit[name] && bal[name] >= limit[name];
+          exists(name) && hasLimit[name] && bal[name] >= limit[name];
 
         // ── per-transaction fire pointers ──
         const ev = transactions.map((t) => +t.every || 1); // interval in months (fractions OK)
@@ -877,6 +1004,7 @@
 
             transactions.forEach((t, k) => {
               if (ev[k] <= 0) return; // guard against 0 / negative → infinite loop
+              if (disabledGroups[t.group || "General"]) return; // group switched off
               // fire every occurrence that lands at or before this month
 
               while (fire[k] <= m && fire[k] <= endAt[k]) {
@@ -895,6 +1023,9 @@
             });
             // record first below-zero crossing
             for (const a of accounts) {
+              if (inZero[a.name] && bal[a.name] == 0) {
+                continue;
+              }
               if (
                 firstNeg[a.name] === undefined &&
                 (Math.abs(bal[a.name]) < 500 ||
@@ -1038,6 +1169,7 @@
         {
           groupBy: "group",
           collapsed: collapsedGroups,
+          disabled: disabledGroups,
           onCollapseChange: save,
         },
       );
