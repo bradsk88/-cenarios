@@ -98,7 +98,7 @@
       }
       .group-name {
         width: auto;
-        min-width: 140px;
+        min-width: 600px;
         font-weight: 600;
         border: 1px solid transparent;
         background: transparent;
@@ -209,6 +209,7 @@
       <!-- LEFT: accounts + controls + chart -->
       <div class="left">
         <div class="controls">
+          <label>Start year <input id="start-year" type="number" /></label>
           <label>Years <input id="years" type="number" value="20" /></label>
           <button id="reset">Reset all</button>
           <button id="export">Export CSV</button>
@@ -235,6 +236,7 @@
           </thead>
           <tbody id="tx-rows"></tbody>
         </table>
+        <button id="tx-add">+ Transaction</button>
         <button id="tx-add-group">+ Group</button>
       </div>
     </div>
@@ -352,6 +354,7 @@
             accounts,
             transactions,
             years: +$("years").value,
+            startYear: +$("start-year").value || null,
             collapsedGroups,
             disabledGroups,
           }),
@@ -366,6 +369,7 @@
           if (d.accounts) accounts = d.accounts;
           if (d.transactions) transactions = d.transactions;
           if (d.years != null) $("years").value = d.years;
+          if (d.startYear != null) $("start-year").value = d.startYear;
           if (d.collapsedGroups) collapsedGroups = d.collapsedGroups;
           if (d.disabledGroups) disabledGroups = d.disabledGroups;
         } catch {} // corrupt storage → ignore, use defaults
@@ -793,7 +797,7 @@
           }
         }
 
-        $(addId)?.addEventListener("click", () => addRow());
+        $(addId).addEventListener("click", () => addRow());
         render();
 
         const SC_KEYS = {
@@ -956,6 +960,17 @@
         return (y - baseY) * 12 + (m - baseM);
       }
 
+      // display-only: left edge of the chart, as a month index from now.
+      // "start year" crops the view to begin at January of that year; it
+      // never changes the underlying projection. Clamped into range.
+      function startMonthIndex() {
+        const years = +$("years").value || 0;
+        const Y = +$("start-year").value;
+        if (!Number.isFinite(Y) || Y <= baseY) return 0;
+        const idx = (Y - baseY) * 12 + (1 - baseM); // Jan of year Y
+        return Math.max(0, Math.min(idx, years * 12));
+      }
+
       // ── MATH ──
 
       function buildData() {
@@ -971,8 +986,7 @@
           limit = {},
           hasLimit = {},
           out = {},
-          noNeg = {},
-          inZero = {};
+          noNeg = {};
         for (const a of accounts) {
           bal[a.name] = +a.balance || 0;
           rate[a.name] = (+a.rate || 0) / 100 / 12;
@@ -983,7 +997,6 @@
           hasLimit[a.name] = limit[a.name] !== 0 || bal[a.name] < 0;
           out[a.name] = [];
           noNeg[a.name] = !a.overdraft;
-          inZero[a.name] = a.balance === 0;
         }
         const exists = (name) => name !== "world" && bal[name] !== undefined;
         const isFull = (name) =>
@@ -1023,9 +1036,6 @@
             });
             // record first below-zero crossing
             for (const a of accounts) {
-              if (inZero[a.name] && bal[a.name] == 0) {
-                continue;
-              }
               if (
                 firstNeg[a.name] === undefined &&
                 (Math.abs(bal[a.name]) < 500 ||
@@ -1043,6 +1053,11 @@
           .filter((a) => firstNeg[a.name] !== undefined)
           .map((a) => ({ account: a.name, x: firstNeg[a.name] / STEP }));
 
+        // show points when the *visible* window is short (≤ ~2 years),
+        // so cropping with "start year" re-enables them too
+        const visibleMonths = years * 12 - startMonthIndex();
+        const showPoints = visibleMonths <= 24;
+
         return {
           labels,
           datasets: accounts.map((a) => ({
@@ -1050,13 +1065,14 @@
             data: out[a.name],
             fill: true,
             tension: 0.2,
-            pointRadius: years > 2 ? 0 : undefined,
+            pointRadius: showPoints ? undefined : 0,
           })),
         };
       }
 
       load();
       ensureGroups();
+      if (!$("start-year").value) $("start-year").value = baseY; // default = now
 
       const zeroCrossPlugin = {
         id: "zeroCross",
@@ -1071,6 +1087,7 @@
             const pLo = xScale.getPixelForValue(lo);
             const pHi = xScale.getPixelForValue(hi);
             const px = lo === hi ? pLo : pLo + (pHi - pLo) * (c.x - lo);
+            if (px < chartArea.left - 0.5 || px > chartArea.right + 0.5) return; // off-screen (cropped)
 
             ctx.save();
             ctx.strokeStyle = "rgba(200,0,0,.8)";
@@ -1140,6 +1157,14 @@
         },
       });
 
+      // display-only crop: set the x-axis left edge from "start year"
+      function applyCrop() {
+        const idx = startMonthIndex();
+        chart.options.scales.x.min = idx > 0 ? idx : undefined;
+      }
+      applyCrop();
+      chart.update();
+
       function refresh() {
         // remember hidden series, keyed by label
         const wasHidden = {};
@@ -1154,6 +1179,7 @@
           chart.setDatasetVisibility(i, !wasHidden[ds.label]);
         });
 
+        applyCrop();
         chart.update();
         save();
       }
@@ -1191,6 +1217,7 @@
         },
       );
       $("years").addEventListener("input", refresh);
+      $("start-year").addEventListener("input", refresh);
 
       // + Group → make a fresh empty-ish group (one starter row, expanded)
       $("tx-add-group").addEventListener("click", () => {
